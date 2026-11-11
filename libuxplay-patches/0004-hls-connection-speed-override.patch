@@ -1,20 +1,23 @@
 diff --git a/renderers/video_renderer.c b/renderers/video_renderer.c
-index 6f4a5ff..e99991d 100644
+index 6f4a5ff..9351b77 100644
 --- a/renderers/video_renderer.c
 +++ b/renderers/video_renderer.c
-@@ -341,6 +341,16 @@ void video_renderer_init(logger_t *render_logger, const char *server_name, video
+@@ -341,6 +341,19 @@ void video_renderer_init(logger_t *render_logger, const char *server_name, video
              flags |= GST_PLAY_FLAG_DOWNLOAD;
              flags |= GST_PLAY_FLAG_BUFFERING;    // set by default in playbin3, but not in playbin2; is it needed?
              g_object_set(renderer_type[i]->pipeline, "flags", flags, NULL);
-+            /* optional override of the measured download rate that hlsdemux uses to choose
-+             * the HLS variant: UXPLAY_HLS_CONNECTION_SPEED=<kbit/s> (unset or 0: automatic) */
++            /* hlsdemux picks the HLS variant from the download rate it measures, but for
++             * short fragments that rate is dominated by per-request latency (redirects,
++             * TLS setup) and drifts down to the lowest quality.  Use a fixed rate instead:
++             * UXPLAY_HLS_CONNECTION_SPEED=<kbit/s> overrides it, 0 restores measuring. */
++            guint64 hls_kbps = 100000;
 +            const gchar *speed_env = g_getenv("UXPLAY_HLS_CONNECTION_SPEED");
 +            if (speed_env) {
-+                guint64 kbps = g_ascii_strtoull(speed_env, NULL, 10);
-+                if (kbps > 0) {
-+                    g_object_set(renderer_type[i]->pipeline, "connection-speed", kbps, NULL);
-+                    logger_log(logger, LOGGER_INFO, "HLS connection-speed fixed at %" G_GUINT64_FORMAT " kbit/s", kbps);
-+                }
++                hls_kbps = g_ascii_strtoull(speed_env, NULL, 10);
++            }
++            if (hls_kbps > 0) {
++                g_object_set(renderer_type[i]->pipeline, "connection-speed", hls_kbps, NULL);
++                logger_log(logger, LOGGER_INFO, "HLS connection-speed fixed at %" G_GUINT64_FORMAT " kbit/s", hls_kbps);
 +            }
              //g_object_set (G_OBJECT (renderer_type[i]->pipeline), "uri", uri, NULL);
          } else {
