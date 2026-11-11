@@ -1,0 +1,52 @@
+diff --git a/renderers/video_renderer.c b/renderers/video_renderer.c
+index 6f4a5ff..949ed8c 100644
+--- a/renderers/video_renderer.c
++++ b/renderers/video_renderer.c
+@@ -249,6 +249,31 @@ g_string_replace (GString     *string,
+ }
+ #endif
+ 
++/* HLS variant selection.  hlsdemux chooses the variant from the download rate it measures,
++ * but for short fragments that rate is dominated by per-request latency (redirects, TLS
++ * setup): the lower the quality, the smaller the fragments and the lower the measured
++ * rate, so playback drifts down to the lowest quality.  A lower bound on the variant
++ * bitrate stops that drift while still letting hlsdemux adapt above it.
++ *   UXPLAY_HLS_MIN_BITRATE=<bit/s>        lower bound (default 1200000; 0 = none)
++ *   UXPLAY_HLS_CONNECTION_SPEED=<kbit/s>  use a fixed rate instead of measuring (default: measure) */
++static void hls_element_setup(GstElement *playbin, GstElement *element, gpointer user_data) {
++    GstElementFactory *factory = gst_element_get_factory(element);
++    const gchar *name = factory ? GST_OBJECT_NAME(factory) : NULL;
++    if (!name || !g_str_has_prefix(name, "hlsdemux")) {
++        return;
++    }
++    guint64 min_bitrate = 1200000;
++    const gchar *min_env = g_getenv("UXPLAY_HLS_MIN_BITRATE");
++    if (min_env) {
++        min_bitrate = g_ascii_strtoull(min_env, NULL, 10);
++    }
++    if (min_bitrate > 0 && min_bitrate <= G_MAXUINT &&
++        g_object_class_find_property(G_OBJECT_GET_CLASS(element), "min-bitrate")) {
++        g_object_set(element, "min-bitrate", (guint) min_bitrate, NULL);
++        logger_log(logger, LOGGER_INFO, "HLS minimum variant bitrate set to %u bit/s", (guint) min_bitrate);
++    }
++}
++
+ void video_renderer_init(logger_t *render_logger, const char *server_name, videoflip_t videoflip[2], const char *parser, const char * rtp_pipeline,
+                           const char *decoder, const char *converter, const char *videosink, const char *videosink_options, 
+                           bool initial_fullscreen, bool video_sync, bool h265_support, bool coverart_support, guint playbin_version, const char *uri) {
+@@ -341,6 +366,15 @@ void video_renderer_init(logger_t *render_logger, const char *server_name, video
+             flags |= GST_PLAY_FLAG_DOWNLOAD;
+             flags |= GST_PLAY_FLAG_BUFFERING;    // set by default in playbin3, but not in playbin2; is it needed?
+             g_object_set(renderer_type[i]->pipeline, "flags", flags, NULL);
++            g_signal_connect(renderer_type[i]->pipeline, "element-setup", G_CALLBACK(hls_element_setup), NULL);
++            const gchar *speed_env = g_getenv("UXPLAY_HLS_CONNECTION_SPEED");
++            if (speed_env) {
++                guint64 hls_kbps = g_ascii_strtoull(speed_env, NULL, 10);
++                if (hls_kbps > 0) {
++                    g_object_set(renderer_type[i]->pipeline, "connection-speed", hls_kbps, NULL);
++                    logger_log(logger, LOGGER_INFO, "HLS connection-speed fixed at %" G_GUINT64_FORMAT " kbit/s", hls_kbps);
++                }
++            }
+             //g_object_set (G_OBJECT (renderer_type[i]->pipeline), "uri", uri, NULL);
+         } else {
+             bool jpeg_pipeline = false;
