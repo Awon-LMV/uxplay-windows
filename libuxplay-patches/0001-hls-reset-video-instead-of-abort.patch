@@ -16,10 +16,10 @@ index 6f4a5ff..88f7e11 100644
          g_assert(type_jpeg != -1);
          renderer_used = renderer_type[type_jpeg];
 diff --git a/uxplay.cpp b/uxplay.cpp
-index 65dd2fd..faf26c5 100644
+index 65dd2fd..9708646 100644
 --- a/uxplay.cpp
 +++ b/uxplay.cpp
-@@ -2348,7 +2348,24 @@ extern "C" int video_set_codec(void *cls, video_codec_t codec) {
+@@ -2348,7 +2348,22 @@ extern "C" int video_set_codec(void *cls, video_codec_t codec) {
      if (!use_video) {
          return 0;
      }
@@ -28,15 +28,13 @@ index 65dd2fd..faf26c5 100644
 +    if (ret == -2) {
 +        /* Mirror video arrived while the HLS renderer was still active (HLS playback
 +         * failed, or its reset was still pending).  Instead of aborting, drop this
-+         * connection and rebuild the mirror-mode renderers, so the client can reconnect. */
++         * connection and let the main loop rebuild the mirror-mode renderers, so the
++         * client can reconnect.  Only flags are set here: this runs on the mirror
++         * thread, and the renderer itself is owned by the main-loop thread. */
 +        LOGI("*** HLS renderer still active when mirroring started: resetting video (client must reconnect)");
-+        video_renderer_stop();
-+        url.erase();
-+        if (hls_support) {
-+            raop_destroy_airplay_video(raop, -1);
-+        }
 +        preserve_connections = false;
 +        full_video_reset = true;
++        reset_httpd = true;
 +        relaunch_video = true;
 +        reset_loop = true;
 +        return -1;

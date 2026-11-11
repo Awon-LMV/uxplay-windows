@@ -1,11 +1,14 @@
 diff --git a/Bluetooth_LE_beacon/uxplay-beacon-windows.py b/Bluetooth_LE_beacon/uxplay-beacon-windows.py
-index f5b028f..9d79207 100644
+index f5b028f..6655550 100644
 --- a/Bluetooth_LE_beacon/uxplay-beacon-windows.py
 +++ b/Bluetooth_LE_beacon/uxplay-beacon-windows.py
-@@ -104,15 +104,60 @@ def read_ble_file(path: str):
+@@ -104,15 +104,67 @@ def read_ble_file(path: str):
  
  # ── Main polling loop ──────────────────────────────────────────────────────────
  
++import re
++_VIRTUAL_ADAPTER = re.compile(r"vEthernet|Hyper-V|WSL|VirtualBox|VMware|TAP-|tap\d|Loopback|Bluetooth|ZeroTier", re.IGNORECASE)
++
 +def _lan_ipv4_candidates():
 +    """IPv4 addresses of connected adapters that have a hardware (MAC) address.
 +
@@ -34,9 +37,13 @@ index f5b028f..9d79207 100644
 +                continue
 +            if ip.is_loopback or ip.is_link_local:
 +                continue
-+            candidates.append((0 if ip.is_private else 1, a.address))
-+    candidates.sort()
-+    return [address for _, address in candidates]
++            # rank: real adapters before virtual ones (Hyper-V/WSL vEthernet, VirtualBox,
++            # VMware, TAP), then private addresses before public ones; order is kept
++            # otherwise (sorted() is stable)
++            virtual = bool(_VIRTUAL_ADAPTER.search(name))
++            candidates.append((virtual, not ip.is_private, a.address))
++    candidates.sort(key=lambda c: (c[0], c[1]))
++    return [c[2] for c in candidates]
 +
  def get_local_ipv4() -> str:
 +    default_ip = None

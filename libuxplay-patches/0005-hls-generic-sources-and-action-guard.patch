@@ -1,7 +1,16 @@
 diff --git a/lib/airplay_video.c b/lib/airplay_video.c
-index 19505b2..275a366 100644
+index 19505b2..a51b7db 100644
 --- a/lib/airplay_video.c
 +++ b/lib/airplay_video.c
+@@ -235,7 +235,7 @@ const char *get_apple_session_id(airplay_video_t *airplay_video) {
+ }
+ 
+ float get_duration(airplay_video_t *airplay_video) {
+-    if (!airplay_video || !airplay_video->media_data_store || !airplay_video->media_data_store->duration) {
++    if (!airplay_video || airplay_video->num_uri <= 0 || !airplay_video->media_data_store || !airplay_video->media_data_store->duration) {
+         return 0.0f;
+     }
+     return airplay_video->media_data_store->duration;
 @@ -768,6 +768,12 @@ char *adjust_master_playlist (char *fcup_response_data, int fcup_response_datale
      char *first = fcup_response_data;
      char *new = new_master;
@@ -16,9 +25,18 @@ index 19505b2..275a366 100644
      while (last != NULL) {
          counter++;
 diff --git a/lib/http_handlers.h b/lib/http_handlers.h
-index 7984be8..58df9ea 100644
+index 7984be8..488e4bf 100644
 --- a/lib/http_handlers.h
 +++ b/lib/http_handlers.h
+@@ -249,7 +249,7 @@ http_handler_set_property(raop_conn_t *conn,
+             }
+         }
+         plist_free (req_root_node);
+-        if (language_code && language_name) {
++        if (airplay_video && language_code && language_name) {
+             set_language_code(airplay_video, language_code, strlen(language_code));
+             set_language_name(airplay_video, language_name, strlen(language_name));
+             logger_log(raop->logger, LOGGER_INFO, "stored language from MediaSelectionOptions: %s \"%s\"",
 @@ -468,7 +468,12 @@ http_handler_action(raop_conn_t *conn, http_request_t *request, http_response_t
  
      raop_t *raop = conn->raop;
