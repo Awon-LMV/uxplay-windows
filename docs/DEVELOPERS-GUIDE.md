@@ -74,6 +74,13 @@ Bonjour SDK            generated/cached SDK for the selected architecture
 `packaging/gstreamer-features.txt` contains stable GStreamer element names. 
 During every build, the installed GStreamer registry maps
 those names to the current plugin DLLs.
+A line of the form `plugin:<name>` bundles a whole plugin by its registry name;
+use it for plugins that provide no elements (for example `plugin:typefindfunctions`,
+without which playbin cannot detect the type of HLS streams).
+
+Fixes for the `libuxplay` submodule are kept as patch files in
+`libuxplay-patches`. `build.ps1` applies them to the checked-out sources before
+compiling and skips the ones that are already applied.
 
 The Bluetooth component is packaged using Python for Windows, 
 while MSYS2 Python is used for GStreamer-related tasks.

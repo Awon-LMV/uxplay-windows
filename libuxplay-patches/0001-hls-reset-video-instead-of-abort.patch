@@ -1,0 +1,47 @@
+diff --git a/renderers/video_renderer.c b/renderers/video_renderer.c
+index 6f4a5ff..88f7e11 100644
+--- a/renderers/video_renderer.c
++++ b/renderers/video_renderer.c
+@@ -1041,7 +1041,11 @@ static gboolean gstreamer_video_pipeline_bus_callback(GstBus *bus, GstMessage *m
+ 
+ int video_renderer_choose_codec (bool video_is_jpeg, bool video_is_h265) {
+     video_renderer_t *renderer_used = NULL;
+-    g_assert(!hls_video);
++    if (hls_video) {
++        /* the HLS (playbin) renderer is still active: mirror-mode video cannot be rendered */
++        logger_log(logger, LOGGER_ERR, "mirror-mode video started while the HLS renderer is still active");
++        return -2;
++    }
+     if (video_is_jpeg) {
+         g_assert(type_jpeg != -1);
+         renderer_used = renderer_type[type_jpeg];
+diff --git a/uxplay.cpp b/uxplay.cpp
+index 65dd2fd..faf26c5 100644
+--- a/uxplay.cpp
++++ b/uxplay.cpp
+@@ -2348,7 +2348,24 @@ extern "C" int video_set_codec(void *cls, video_codec_t codec) {
+     if (!use_video) {
+         return 0;
+     }
+-    return video_renderer_choose_codec(false, video_is_h265);
++    int ret = video_renderer_choose_codec(false, video_is_h265);
++    if (ret == -2) {
++        /* Mirror video arrived while the HLS renderer was still active (HLS playback
++         * failed, or its reset was still pending).  Instead of aborting, drop this
++         * connection and rebuild the mirror-mode renderers, so the client can reconnect. */
++        LOGI("*** HLS renderer still active when mirroring started: resetting video (client must reconnect)");
++        video_renderer_stop();
++        url.erase();
++        if (hls_support) {
++            raop_destroy_airplay_video(raop, -1);
++        }
++        preserve_connections = false;
++        full_video_reset = true;
++        relaunch_video = true;
++        reset_loop = true;
++        return -1;
++    }
++    return ret;
+ }
+ 
+ extern "C" void display_pin(void *cls, char *pin) {

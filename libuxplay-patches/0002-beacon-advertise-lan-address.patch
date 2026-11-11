@@ -1,0 +1,68 @@
+diff --git a/Bluetooth_LE_beacon/uxplay-beacon-windows.py b/Bluetooth_LE_beacon/uxplay-beacon-windows.py
+index f5b028f..9d79207 100644
+--- a/Bluetooth_LE_beacon/uxplay-beacon-windows.py
++++ b/Bluetooth_LE_beacon/uxplay-beacon-windows.py
+@@ -104,15 +104,60 @@ def read_ble_file(path: str):
+ 
+ # ── Main polling loop ──────────────────────────────────────────────────────────
+ 
++def _lan_ipv4_candidates():
++    """IPv4 addresses of connected adapters that have a hardware (MAC) address.
++
++    VPN tunnel adapters (Wintun/WireGuard, Tailscale, ...) have no MAC address:
++    this is how they are told apart from Ethernet and Wi-Fi adapters.  An AirPlay
++    client on the local network can only reach the address of a real adapter."""
++    import ipaddress
++    candidates = []
++    stats = psutil.net_if_stats()
++    for name, addrs in psutil.net_if_addrs().items():
++        st = stats.get(name)
++        if st is None or not st.isup:
++            continue
++        mac = ""
++        for a in addrs:
++            if a.family == psutil.AF_LINK:
++                mac = (a.address or "").replace("-", "").replace(":", "")
++        if not mac or set(mac) <= {"0"}:
++            continue
++        for a in addrs:
++            if a.family != socket.AF_INET:
++                continue
++            try:
++                ip = ipaddress.ip_address(a.address)
++            except ValueError:
++                continue
++            if ip.is_loopback or ip.is_link_local:
++                continue
++            candidates.append((0 if ip.is_private else 1, a.address))
++    candidates.sort()
++    return [address for _, address in candidates]
++
+ def get_local_ipv4() -> str:
++    default_ip = None
+     try:
+         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+         s.connect(("8.8.8.8", 80))
+-        ip = s.getsockname()[0]
++        default_ip = s.getsockname()[0]
+         s.close()
+-        return ip
+     except Exception:
+-        return socket.gethostbyname(socket.gethostname())
++        default_ip = None
++    # With a full-tunnel VPN the default route belongs to the tunnel adapter,
++    # whose address local clients cannot reach: prefer a real LAN adapter.
++    try:
++        candidates = _lan_ipv4_candidates()
++    except Exception:
++        candidates = []
++    if candidates:
++        if default_ip in candidates:
++            return default_ip
++        return candidates[0]
++    if default_ip:
++        return default_ip
++    return socket.gethostbyname(socket.gethostname())
+ 
+ def main():
+     parser = argparse.ArgumentParser(description="AirPlay BLE beacon for uxplay-windows")

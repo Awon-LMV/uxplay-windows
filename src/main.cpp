@@ -136,6 +136,23 @@ static int runRuntimeSelfTest(const QString &appPath) {
                 continue;
             }
 
+            if (featureName.startsWith("plugin:")) {
+                // Whole plugin bundled by name (it may provide no elements).
+                const QByteArray pluginUtf8 = featureName.mid(7).toUtf8();
+                GstPlugin *plugin = gst_registry_find_plugin(
+                    registry,
+                    pluginUtf8.constData()
+                );
+                if (!plugin) {
+                    fprintf(stderr, "SELF-TEST ERROR: GStreamer plugin missing: %s\n",
+                            pluginUtf8.constData());
+                    passed = false;
+                } else {
+                    gst_object_unref(plugin);
+                }
+                continue;
+            }
+
             const QByteArray featureUtf8 = featureName.toUtf8();
             GstPluginFeature *feature = gst_registry_find_feature(
                 registry,
@@ -205,6 +222,13 @@ int main(int argc, char *argv[]) {
         "FONTCONFIG_PATH",
         QDir::toNativeSeparators(appPath + "/etc/fonts").toUtf8()
     );
+    // The bundled GIO modules include the GNOME proxy resolver, which aborts the
+    // process on Windows (no GSettings schemas) as soon as GStreamer opens an
+    // HTTP connection for HLS video. Use direct connections unless the user
+    // selected a resolver explicitly.
+    if (!qEnvironmentVariableIsSet("GIO_USE_PROXY_RESOLVER")) {
+        qputenv("GIO_USE_PROXY_RESOLVER", "dummy");
+    }
 
     QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
     QString path = QDir::toNativeSeparators(appPath) + ";" + env.value("PATH");

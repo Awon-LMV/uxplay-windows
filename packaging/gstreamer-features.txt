@@ -44,6 +44,20 @@ souphttpsrc
 hlsdemux
 hlsdemux2
 
+# HLS media: stream type detection, containers, parsers and decoders that
+# playbin plugs in automatically for YouTube segments (MPEG-TS and fMP4).
+# "plugin:<name>" bundles a whole plugin that has no element to name
+# (typefindfunctions only provides type finders).
+plugin:typefindfunctions
+tsdemux
+qtdemux
+id3demux
+mpegaudioparse
+vp9parse
+avdec_vp9
+opusdec
+subparse
+
 # Optional RTP output exposed by UxPlay
 rtph264pay
 rtph265pay

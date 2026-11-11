@@ -248,12 +248,41 @@ function Ensure-BonjourSdk {
         -Architecture $Architecture
 }
 
+function Apply-LibuxplayPatches {
+    # Local fixes for the libuxplay submodule live in libuxplay-patches and are
+    # applied to the checked-out sources before compiling. Already applied
+    # patches are detected, so repeated local builds are safe.
+    $patchDir = Join-Path $projectRoot "libuxplay-patches"
+    if (-not (Test-Path -LiteralPath $patchDir)) {
+        return
+    }
+    $libuxplay = Join-Path $projectRoot "libuxplay"
+    $patches = Get-ChildItem -LiteralPath $patchDir -Filter "*.patch" -File |
+        Sort-Object Name
+    foreach ($patch in $patches) {
+        & git -C $libuxplay apply --quiet --reverse --check $patch.FullName
+        if ($LASTEXITCODE -eq 0) {
+            Write-Host "libuxplay patch already applied: $($patch.Name)"
+            continue
+        }
+        Write-Host "Applying libuxplay patch: $($patch.Name)"
+        Invoke-Native `
+            -FilePath "git" `
+            -Arguments @(
+                "-C", $libuxplay,
+                "apply", "--whitespace=nowarn",
+                $patch.FullName
+            )
+    }
+}
+
 function Build-Application {
     $beaconPython = Get-BeaconPython
     Set-BuildEnvironment
     Assert-BuildTools
     Assert-BeaconPythonPackages -Python $beaconPython
     Ensure-BonjourSdk
+    Apply-LibuxplayPatches
     New-Item -ItemType Directory -Force -Path $buildDir | Out-Null
 
     $cmake = Join-Path $runtimeBin "cmake.exe"

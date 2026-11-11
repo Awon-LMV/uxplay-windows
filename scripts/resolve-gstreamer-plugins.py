@@ -19,6 +19,9 @@ gi.require_version("Gst", "1.0")
 from gi.repository import Gst  # noqa: E402
 
 
+PLUGIN_PREFIX = "plugin:"
+
+
 def read_features(path: Path) -> list[str]:
     features: list[str] = []
     for raw_line in path.read_text(encoding="utf-8").splitlines():
@@ -47,12 +50,18 @@ def main() -> int:
     missing: list[str] = []
 
     for feature_name in read_features(args.features):
-        feature = registry.find_feature(feature_name, Gst.ElementFactory)
-        if feature is None:
+        if feature_name.startswith(PLUGIN_PREFIX):
+            # Whole plugin requested by name (it may provide no elements,
+            # e.g. typefindfunctions only registers type finders).
+            plugin = registry.find_plugin(feature_name[len(PLUGIN_PREFIX):])
+        else:
+            feature = registry.find_feature(feature_name, Gst.ElementFactory)
+            plugin = feature.get_plugin() if feature is not None else None
+
+        if plugin is None:
             missing.append(feature_name)
             continue
 
-        plugin = feature.get_plugin()
         filename = plugin.get_filename() if plugin is not None else None
         if not filename:
             missing.append(feature_name)
