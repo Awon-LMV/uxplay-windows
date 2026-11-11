@@ -1,8 +1,8 @@
 diff --git a/lib/airplay_video.c b/lib/airplay_video.c
-index 19505b2..0155ebf 100644
+index 19505b2..39d9717 100644
 --- a/lib/airplay_video.c
 +++ b/lib/airplay_video.c
-@@ -523,6 +523,80 @@ char * select_master_playlist_language(airplay_video_t *airplay_video, char *mas
+@@ -523,6 +523,93 @@ char * select_master_playlist_language(airplay_video_t *airplay_video, char *mas
      return new_master_playlist;
  }
  
@@ -23,8 +23,21 @@ index 19505b2..0155ebf 100644
 +}
 +
 +static bool playlist_line_is_non_h264_video(const char *line, size_t len) {
-+    return (playlist_line_has(line, len, "vp09") || playlist_line_has(line, len, "vp9") ||
-+            playlist_line_has(line, len, "av01"));
++    /* only look inside the CODECS="..." attribute */
++    const char *attr = "CODECS=\"";
++    size_t attr_len = strlen(attr);
++    for (size_t i = 0; i + attr_len <= len; i++) {
++        if (!memcmp(line + i, attr, attr_len)) {
++            const char *codecs = line + i + attr_len;
++            size_t codecs_len = 0;
++            while (i + attr_len + codecs_len < len && codecs[codecs_len] != '"') {
++                codecs_len++;
++            }
++            return (playlist_line_has(codecs, codecs_len, "vp09") ||
++                    playlist_line_has(codecs, codecs_len, "av01"));
++        }
++    }
++    return false;
 +}
 +
 +char *select_master_playlist_codec(char *master_playlist) {
