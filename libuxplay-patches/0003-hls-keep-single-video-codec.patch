@@ -1,0 +1,109 @@
+diff --git a/lib/airplay_video.c b/lib/airplay_video.c
+index 19505b2..0155ebf 100644
+--- a/lib/airplay_video.c
++++ b/lib/airplay_video.c
+@@ -523,6 +523,80 @@ char * select_master_playlist_language(airplay_video_t *airplay_video, char *mas
+     return new_master_playlist;
+ }
+ 
++/* GStreamer's hlsdemux2 cannot switch between variants that use different video
++ * codecs: YouTube offers H.264 and VP9 (or AV1) renditions in the same master
++ * playlist, and an adaptive switch from one to the other ends playback with
++ * "Internal data stream error".  When H.264 variants are offered, remove the
++ * variants with other video codecs, so that all bitrate switches stay within
++ * one codec.  The playlist is edited in place (it can only become shorter). */
++static bool playlist_line_has(const char *line, size_t len, const char *word) {
++    size_t wlen = strlen(word);
++    for (size_t i = 0; i + wlen <= len; i++) {
++        if (!memcmp(line + i, word, wlen)) {
++            return true;
++        }
++    }
++    return false;
++}
++
++static bool playlist_line_is_non_h264_video(const char *line, size_t len) {
++    return (playlist_line_has(line, len, "vp09") || playlist_line_has(line, len, "vp9") ||
++            playlist_line_has(line, len, "av01"));
++}
++
++char *select_master_playlist_codec(char *master_playlist) {
++    const char *stream_inf = "#EXT-X-STREAM-INF:";
++    const char *iframe_inf = "#EXT-X-I-FRAME-STREAM-INF:";
++    size_t stream_inf_len = strlen(stream_inf);
++    size_t iframe_inf_len = strlen(iframe_inf);
++    int keep = 0;
++    int drop = 0;
++    assert(master_playlist);
++
++    for (char *line = master_playlist; line && *line; ) {
++        char *eol = strchr(line, '\n');
++        size_t len = eol ? (size_t) (eol - line) : strlen(line);
++        if (!strncmp(line, stream_inf, stream_inf_len)) {
++            if (playlist_line_is_non_h264_video(line, len)) {
++                drop++;
++            } else {
++                keep++;
++            }
++        }
++        line = eol ? eol + 1 : NULL;
++    }
++    if (!keep || !drop) {
++        return master_playlist;
++    }
++
++    char *out = master_playlist;
++    bool skip_uri = false;
++    for (char *line = master_playlist; line && *line; ) {
++        char *eol = strchr(line, '\n');
++        size_t len = eol ? (size_t) (eol - line) : strlen(line);
++        size_t full_len = eol ? len + 1 : len;
++        char *next = eol ? eol + 1 : NULL;
++        bool skip = false;
++        if (!strncmp(line, stream_inf, stream_inf_len)) {
++            skip_uri = playlist_line_is_non_h264_video(line, len);
++            skip = skip_uri;
++        } else if (!strncmp(line, iframe_inf, iframe_inf_len)) {
++            skip = playlist_line_is_non_h264_video(line, len);
++        } else if (skip_uri && line[0] != '#' && len > 0 && line[0] != '\r') {
++            /* the URI line that belongs to a removed #EXT-X-STREAM-INF line */
++            skip = true;
++            skip_uri = false;
++        }
++        if (!skip) {
++            memmove(out, line, full_len);
++            out += full_len;
++        }
++        line = next;
++    }
++    *out = '\0';
++    return master_playlist;
++}
++
+ char *get_master_playlist(airplay_video_t *airplay_video) {
+     return  airplay_video->master_playlist;
+ }
+diff --git a/lib/airplay_video.h b/lib/airplay_video.h
+index 95ad87c..04c37a2 100644
+--- a/lib/airplay_video.h
++++ b/lib/airplay_video.h
+@@ -57,6 +57,7 @@ int create_media_uri_table(const char *url_prefix, const char *master_playlist_d
+                            int datalen, char ***media_uri_table, int *num_uri);
+ void store_master_playlist(airplay_video_t *airplay_video, char *master_playlist);
+ char *select_master_playlist_language(airplay_video_t *airplay_video, char *master_playlist);
++char *select_master_playlist_codec(char *master_playlist);
+ int store_media_playlist(airplay_video_t *airplay_video, char *media_playlist, int *count, float *duration, bool*endlist, int num);
+ char *get_master_playlist(airplay_video_t *airplay_video);
+ char *get_media_playlist(airplay_video_t *airplay_video, int *count, float *duration, const char *uri);
+diff --git a/lib/http_handlers.h b/lib/http_handlers.h
+index 7984be8..00f9730 100644
+--- a/lib/http_handlers.h
++++ b/lib/http_handlers.h
+@@ -662,6 +662,7 @@ http_handler_action(raop_conn_t *conn, http_request_t *request, http_response_t
+             int num_uri = 0;
+             char *uri_local_prefix = get_uri_local_prefix(airplay_video);
+             playlist = select_master_playlist_language(airplay_video, playlist);
++            playlist = select_master_playlist_codec(playlist);
+             playlist_len = strlen(playlist);
+             create_media_uri_table(uri_prefix, playlist, playlist_len, &uri_list, &num_uri);	
+             char *new_master = adjust_master_playlist (playlist, playlist_len,  uri_prefix, uri_local_prefix);
