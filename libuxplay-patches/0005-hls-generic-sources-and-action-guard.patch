@@ -1,5 +1,5 @@
 diff --git a/lib/airplay_video.c b/lib/airplay_video.c
-index 19505b2..a51b7db 100644
+index 19505b2..69f3696 100644
 --- a/lib/airplay_video.c
 +++ b/lib/airplay_video.c
 @@ -235,7 +235,7 @@ const char *get_apple_session_id(airplay_video_t *airplay_video) {
@@ -11,15 +11,115 @@ index 19505b2..a51b7db 100644
          return 0.0f;
      }
      return airplay_video->media_data_store->duration;
-@@ -768,6 +768,12 @@ char *adjust_master_playlist (char *fcup_response_data, int fcup_response_datale
+@@ -742,6 +742,99 @@ int create_media_uri_table(const char *url_prefix, const char *master_playlist_d
+ }
+ 
+ /* Adjust uri prefixes in the Master Playlist, for sending to the Media Player */
++/* Helpers for master playlists of sources other than YouTube: make relative URIs
++ * absolute, using the location the playlist was fetched from, so that the media
++ * player can fetch the media playlists and segments directly from the source. */
++static char *append_absolute_uri(char *out, const char *uri, size_t len,
++                                 const char *base, size_t base_len, size_t origin_len) {
++    bool absolute = false;
++    for (size_t i = 0; i + 3 <= len; i++) {
++        if (!memcmp(uri + i, "://", 3)) {
++            absolute = true;
++            break;
++        }
++    }
++    if (!absolute && len > 0) {
++        if (uri[0] == '/') {
++            /* path-absolute URI: prepend scheme://host */
++            memcpy(out, base, origin_len);
++            out += origin_len;
++        } else {
++            memcpy(out, base, base_len);
++            out += base_len;
++            *out++ = '/';
++        }
++    }
++    memcpy(out, uri, len);
++    return out + len;
++}
++
++static char *absolutize_master_playlist(const char *data, size_t datalen, const char *base) {
++    const char *attr = "URI=\"";
++    size_t attr_len = strlen(attr);
++    size_t base_len = strlen(base);
++    size_t origin_len = base_len;
++    const char *scheme_end = strstr(base, "://");
++    if (scheme_end) {
++        const char *path = strchr(scheme_end + 3, '/');
++        if (path) {
++            origin_len = (size_t) (path - base);
++        }
++    }
++    /* upper bound on the number of URIs: one per line plus one per URI="..." attribute */
++    size_t uri_count = 1;
++    for (size_t i = 0; i < datalen; i++) {
++        if (data[i] == '\n') {
++            uri_count++;
++        }
++    }
++    for (const char *p = strstr(data, attr); p; p = strstr(p + attr_len, attr)) {
++        uri_count++;
++    }
++    char *out = (char *) malloc(datalen + uri_count * (base_len + 1) + 1);
++    if (!out) {
++        printf("Memory allocation failure (absolutize_master_playlist)\n");
++        exit(1);
++    }
++    char *o = out;
++    const char *line = data;
++    const char *end = data + datalen;
++    while (line < end) {
++        const char *eol = (const char *) memchr(line, '\n', (size_t) (end - line));
++        size_t len = eol ? (size_t) (eol - line) : (size_t) (end - line);
++        if (len > 0 && line[0] != '#' && line[0] != '\r') {
++            /* a URI line */
++            o = append_absolute_uri(o, line, len, base, base_len, origin_len);
++        } else {
++            /* a tag (or empty) line: only URI="..." attributes are rewritten */
++            size_t pos = 0;
++            while (pos < len) {
++                if (len - pos >= attr_len && !memcmp(line + pos, attr, attr_len)) {
++                    memcpy(o, attr, attr_len);
++                    o += attr_len;
++                    pos += attr_len;
++                    size_t uri_len = 0;
++                    while (pos + uri_len < len && line[pos + uri_len] != '"') {
++                        uri_len++;
++                    }
++                    o = append_absolute_uri(o, line + pos, uri_len, base, base_len, origin_len);
++                    pos += uri_len;
++                } else {
++                    *o++ = line[pos++];
++                }
++            }
++        }
++        if (eol) {
++            *o++ = '\n';
++            line = eol + 1;
++        } else {
++            line = end;
++        }
++    }
++    *o = '\0';
++    return out;
++}
++
+ char *adjust_master_playlist (char *fcup_response_data, int fcup_response_datalen,
+                               const char *uri_prefix, char *uri_local_prefix) {
+     size_t uri_prefix_len = strlen(uri_prefix);
+@@ -768,6 +861,12 @@ char *adjust_master_playlist (char *fcup_response_data, int fcup_response_datale
      char *first = fcup_response_data;
      char *new = new_master;
      char *last = strstr(first, uri_prefix);
 +    if (last == NULL) {
-+        /* no media URI starts with uri_prefix (the playlist uses absolute URIs on other
-+         * hosts, as most non-YouTube HLS sources do): keep the playlist unchanged */
-+        memcpy(new_master, fcup_response_data, fcup_response_datalen);
-+        return new_master;
++        /* no media URI starts with uri_prefix: this is not a YouTube-style playlist.
++         * Keep it as it is, except that relative URIs are made absolute. */
++        free(new_master);
++        return absolutize_master_playlist(fcup_response_data, (size_t) fcup_response_datalen, uri_prefix);
 +    }
      counter  = 0;
      while (last != NULL) {

@@ -1,0 +1,23 @@
+diff --git a/lib/raop.c b/lib/raop.c
+index 7098fae..c9ddc99 100644
+--- a/lib/raop.c
++++ b/lib/raop.c
+@@ -272,7 +272,17 @@ conn_request(void *ptr, http_request_t *request, http_response_t **response) {
+             if (httpd_count_connection_type(raop->httpd, CONNECTION_TYPE_RAOP)) {
+                 char ipaddr[40] = { '\0' };
+                 utils_ipaddress_to_string(conn->remotelen, conn->remote, conn->zone_id, ipaddr, (int) (sizeof(ipaddr)));
+-                if (httpd_nohold(raop->httpd)) {
++                /* "nohold" lets a different client take over.  A client that is already
++                 * connected may open further RAOP connections itself (the iPhone does so
++                 * while it streams HLS video): those must not tear down its own session. */
++                bool same_client = false;
++                raop_conn_t *current = (raop_conn_t *) httpd_get_connection_by_type(raop->httpd, CONNECTION_TYPE_RAOP, 1);
++                if (current && current != conn && current->remote && conn->remote &&
++                    current->remotelen == conn->remotelen &&
++                    !memcmp(current->remote, conn->remote, conn->remotelen)) {
++                    same_client = true;
++                }
++                if (httpd_nohold(raop->httpd) && !same_client) {
+                     logger_log(raop->logger, LOGGER_INFO, "*****\"nohold\" feature: switch to new connection request from %s", ipaddr);		  
+                     httpd_remove_known_connections(raop->httpd);
+                     if (raop->callbacks.video_reset) {

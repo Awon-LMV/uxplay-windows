@@ -1,0 +1,44 @@
+diff --git a/uxplay.cpp b/uxplay.cpp
+index 65dd2fd..c424ee7 100644
+--- a/uxplay.cpp
++++ b/uxplay.cpp
+@@ -817,6 +817,9 @@ static gboolean progress_callback (gpointer loop) {
+     }
+ }
+ 
++static bool hls_stop_pending = false;
++extern "C" void video_reset(void *cls, reset_type_t type);
++
+ static gboolean video_eos_watch_callback (gpointer loop) {
+     if (video_renderer_eos_watch()) {
+         /* HLS video has sent EOS */
+@@ -824,6 +827,13 @@ static gboolean video_eos_watch_callback (gpointer loop) {
+         video_renderer_hls_ready();
+         raop_handle_eos(raop);
+     }
++    if (hls_stop_pending) {
++        /* the client stopped HLS playback (POST /stop): rebuild the mirror-mode renderers
++         * here, on the main-loop thread, so that screen mirroring can resume at once */
++        hls_stop_pending = false;
++        LOGI("hls video was stopped by the client: restoring mirror-mode video");
++        video_reset(NULL, RESET_TYPE_HLS_EOS);
++    }
+     return TRUE;
+ }
+ 
+@@ -2760,6 +2770,7 @@ extern "C" bool check_register(void *cls, const char *client_pk) {
+ extern "C" void on_video_play(void *cls, const char* location, const float start_position) {
+     /* start_position needs to be implemented */
+     video_renderer_set_start(start_position);
++    hls_stop_pending = false;
+     url.erase();
+     url.append(location);
+     relaunch_video = true;
+@@ -2799,6 +2810,7 @@ extern "C" float on_video_playlist_remove (void *cls) {
+  extern "C" void on_video_stop(void *cls) {
+     LOGI("**************************on_video_stop\n");
+     video_renderer_hls_ready();
++    hls_stop_pending = true;
+  }
+ 
+ extern "C" void on_video_acquire_playback_info (void *cls, playback_info_t *playback_info) {
