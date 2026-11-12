@@ -149,18 +149,6 @@ index 1471f67..e9db34e 100644
      }
      counter  = 0;
      while (last != NULL) {
-diff --git a/lib/airplay_video.h b/lib/airplay_video.h
-index 04c37a2..ea5d2a1 100644
---- a/lib/airplay_video.h
-+++ b/lib/airplay_video.h
-@@ -58,6 +58,7 @@ int create_media_uri_table(const char *url_prefix, const char *master_playlist_d
- void store_master_playlist(airplay_video_t *airplay_video, char *master_playlist);
- char *select_master_playlist_language(airplay_video_t *airplay_video, char *master_playlist);
- char *select_master_playlist_codec(char *master_playlist);
-+void airplay_video_skip_source(void);
- int store_media_playlist(airplay_video_t *airplay_video, char *media_playlist, int *count, float *duration, bool*endlist, int num);
- char *get_master_playlist(airplay_video_t *airplay_video);
- char *get_media_playlist(airplay_video_t *airplay_video, int *count, float *duration, const char *uri);
 diff --git a/lib/http_handlers.h b/lib/http_handlers.h
 index a8991aa..3d11a7b 100644
 --- a/lib/http_handlers.h
