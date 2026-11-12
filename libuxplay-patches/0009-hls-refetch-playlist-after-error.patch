@@ -1,0 +1,58 @@
+diff --git a/lib/airplay_video.c b/lib/airplay_video.c
+index e9db34e..a1840b4 100644
+--- a/lib/airplay_video.c
++++ b/lib/airplay_video.c
+@@ -835,9 +835,20 @@ int create_media_uri_table(const char *url_prefix, const char *master_playlist_d
+  * variants and renditions of one host are kept; airplay_video_skip_source() moves on to
+  * the next host after a playback error. */
+ static int hls_source_skip = 0;
++static bool hls_refetch_playlist = false;
+ 
+ void airplay_video_skip_source(void) {
+     hls_source_skip++;
++    hls_refetch_playlist = true;
++}
++
++/* true (once) after a playback error: a stored playlist must not be played again, as
++ * its media URIs may no longer be valid (they can be bound to the address the client
++ * had when it requested them, and they expire) */
++bool airplay_video_take_refetch(void) {
++    bool refetch = hls_refetch_playlist;
++    hls_refetch_playlist = false;
++    return refetch;
+ }
+ 
+ #define MAX_SOURCE_HOSTS 8
+diff --git a/lib/http_handlers.h b/lib/http_handlers.h
+index 3d11a7b..a856df0 100644
+--- a/lib/http_handlers.h
++++ b/lib/http_handlers.h
+@@ -731,6 +731,8 @@ http_handler_action(raop_conn_t *conn, http_request_t *request, http_response_t
+    "start position in seconds".   Once this request is received by the Sever, the Server sends a POST /event
+    "FCUP Request" request to the Client on the reverse http channel, to request the HLS Master Playlist */
+ 
++bool airplay_video_take_refetch(void);
++
+ static void
+ http_handler_play(raop_conn_t *conn, http_request_t *request, http_response_t *response,
+                       char **response_data, int *response_datalen) {
+@@ -792,7 +794,18 @@ http_handler_play(raop_conn_t *conn, http_request_t *request, http_response_t *r
+     /* check if playlist is already downloaded and stored (may have been interrupted by advertisements ) */
+     /* (a stored playlist without media playlists comes from a source other than YouTube:
+      * it is fetched again, so that a different redundant source can be chosen) */
+-    if (id >= 0 && get_duration(raop->airplay_video[id]) > 0.0f) {
++    /* (after a playback error the stored playlist is dropped and fetched again too) */
++    if (airplay_video_take_refetch() && id >= 0) {
++        logger_log(raop->logger, LOGGER_INFO,
++                   "dropping stored playlist playback_uuid %s after a playback error", playback_uuid);
++        raop_destroy_airplay_video(raop, id);
++        id = -1;
++    }
++    if (id >= 0 && get_duration(raop->airplay_video[id]) <= 0.0f) {
++        raop_destroy_airplay_video(raop, id);
++        id = -1;
++    }
++    if (id >= 0) {
+       //printf("====use EXISTING  airplay_video[%d] %p %s %s\n", id, raop->airplay_video[id], playback_uuid, get_playback_uuid(raop->airplay_video[id]));
+         plist_mem_free(playback_uuid);
+         plist_free(req_root_node);
