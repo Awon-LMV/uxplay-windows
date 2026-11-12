@@ -1,0 +1,281 @@
+diff --git a/lib/airplay_video.c b/lib/airplay_video.c
+index d72387a..2d9470d 100644
+--- a/lib/airplay_video.c
++++ b/lib/airplay_video.c
+@@ -910,21 +910,65 @@ static void failed_host_remove(int index) {
+     num_failed_hosts--;
+ }
+ 
++static void failed_host_add(const char *host, size_t len) {
++    if (len == 0 || len >= SOURCE_HOST_LEN || failed_host_index(host, len) >= 0) {
++        return;
++    }
++    if (num_failed_hosts == MAX_FAILED_HOSTS) {
++        failed_host_remove(0);
++    }
++    memcpy(failed_hosts[num_failed_hosts], host, len);
++    failed_hosts[num_failed_hosts][len] = '\0';
++    num_failed_hosts++;
++    failed_hosts_save();
++}
++
++/* optional test that a media URI can be fetched, supplied by the application */
++static bool (*uri_probe)(const char *uri) = NULL;
++
++void airplay_video_set_uri_probe(bool (*probe)(const char *uri)) {
++    uri_probe = probe;
++}
++
++/* true if the media player can be expected to fetch this media playlist.  A server
++ * that refuses the request must not be handed to the media player: it would keep
++ * repeating the request, and cannot be stopped while it does. */
++static bool source_usable(const char *uri, size_t uri_len, const char *host, size_t host_len) {
++    const char *local1 = "localhost";
++    const char *local2 = "127.0.0.1";
++    bool usable;
++    char *copy;
++    if (!uri_probe) {
++        return true;
++    }
++    /* URIs served by this application (YouTube playlists) are not tested */
++    if (host_len >= strlen(local1) && !memcmp(host, local1, strlen(local1))) {
++        return true;
++    }
++    if (host_len >= strlen(local2) && !memcmp(host, local2, strlen(local2))) {
++        return true;
++    }
++    while (uri_len > 0 && (uri[uri_len - 1] == '\r' || uri[uri_len - 1] == ' ')) {
++        uri_len--;
++    }
++    copy = (char *) malloc(uri_len + 1);
++    if (!copy) {
++        return true;
++    }
++    memcpy(copy, uri, uri_len);
++    copy[uri_len] = '\0';
++    usable = uri_probe(copy);
++    free(copy);
++    return usable;
++}
++
+ /* called after a playback error.  The host that was offered to the media player is
+  * marked as failed; returns true if the same playlist has another host to try. */
+ bool airplay_video_source_failed(void) {
+     bool retry = false;
+     if (last_source_host[0]) {
+-        size_t len = strlen(last_source_host);
+         failed_hosts_load();
+-        if (failed_host_index(last_source_host, len) < 0) {
+-            if (num_failed_hosts == MAX_FAILED_HOSTS) {
+-                failed_host_remove(0);
+-            }
+-            memcpy(failed_hosts[num_failed_hosts], last_source_host, len + 1);
+-            num_failed_hosts++;
+-            failed_hosts_save();
+-        }
++        failed_host_add(last_source_host, strlen(last_source_host));
+         retry = (last_source_alternatives > 0);
+         last_source_host[0] = '\0';
+     }
+@@ -979,6 +1023,8 @@ char *select_master_playlist_source(char *master_playlist) {
+     size_t stream_inf_len = strlen(stream_inf);
+     const char *hosts[MAX_SOURCE_HOSTS];
+     size_t host_lens[MAX_SOURCE_HOSTS];
++    const char *uris[MAX_SOURCE_HOSTS];
++    size_t uri_lens[MAX_SOURCE_HOSTS];
+     int nhosts = 0;
+     bool after_stream_inf = false;
+ 
+@@ -1003,41 +1049,54 @@ char *select_master_playlist_source(char *master_playlist) {
+                 if (!known && nhosts < MAX_SOURCE_HOSTS) {
+                     hosts[nhosts] = host;
+                     host_lens[nhosts] = host_len;
++                    uris[nhosts] = line;
++                    uri_lens[nhosts] = len;
+                     nhosts++;
+                 }
+             }
+         }
+         line = eol ? eol + 1 : NULL;
+     }
+-    if (nhosts < 2) {
+-        last_source_host[0] = '\0';
+-        last_source_alternatives = 0;
++    last_source_host[0] = '\0';
++    last_source_alternatives = 0;
++    if (nhosts == 0) {
+         return master_playlist;
+     }
+ 
+-    /* the first host that has not failed is chosen; if all of them have failed,
+-     * they are all given another chance */
++    /* The first host that can be used is chosen.  The hosts that have not failed
++     * before are tried first, then the others (they may work again). */
+     int chosen = -1;
+-    int candidates = 0;
++    int alternatives = 0;
+     failed_hosts_load();
+-    for (int i = 0; i < nhosts; i++) {
+-        if (failed_host_index(hosts[i], host_lens[i]) < 0) {
+-            if (chosen < 0) {
++    for (int pass = 0; pass < 2 && chosen < 0; pass++) {
++        for (int i = 0; i < nhosts; i++) {
++            int index = failed_host_index(hosts[i], host_lens[i]);
++            bool failed_before = (index >= 0);
++            if (failed_before != (pass == 1)) {
++                continue;
++            }
++            if (chosen >= 0) {
++                alternatives++;
++                continue;
++            }
++            if (source_usable(uris[i], uri_lens[i], hosts[i], host_lens[i])) {
+                 chosen = i;
++                if (failed_before) {
++                    failed_host_remove(index);
++                    failed_hosts_save();
++                }
++            } else if (!failed_before && nhosts > 1) {
++                failed_host_add(hosts[i], host_lens[i]);
+             }
+-            candidates++;
+         }
+     }
+     if (chosen < 0) {
+-        for (int i = 0; i < nhosts; i++) {
+-            int index = failed_host_index(hosts[i], host_lens[i]);
+-            if (index >= 0) {
+-                failed_host_remove(index);
+-            }
+-        }
+-        failed_hosts_save();
+-        chosen = 0;
+-        candidates = nhosts;
++        /* no host can be used: an empty playlist tells the caller not to serve it */
++        master_playlist[0] = '\0';
++        return master_playlist;
++    }
++    if (nhosts < 2) {
++        return master_playlist;
+     }
+ 
+     /* copy of the chosen host: the playlist is edited in place below */
+@@ -1049,7 +1108,7 @@ char *select_master_playlist_source(char *master_playlist) {
+     memcpy(chosen_host, hosts[chosen], chosen_len);
+     chosen_host[chosen_len] = '\0';
+     memcpy(last_source_host, chosen_host, chosen_len + 1);
+-    last_source_alternatives = candidates - 1;
++    last_source_alternatives = alternatives;
+ 
+     char *out = master_playlist;
+     char *pending = NULL;        /* a #EXT-X-STREAM-INF line waiting for its URI line */
+diff --git a/lib/http_handlers.h b/lib/http_handlers.h
+index 3e857d4..89bb879 100644
+--- a/lib/http_handlers.h
++++ b/lib/http_handlers.h
+@@ -1005,6 +1005,12 @@ http_handler_hls(raop_conn_t *conn,  http_request_t *request, http_response_t *r
+              * started again with another host after an error */
+             select_master_playlist_source(data);
+             len = strlen(data);
++            if (len == 0) {
++                /* no source of this video can be fetched from here: answer "not found" */
++                logger_log(raop->logger, LOGGER_ERR, "no usable source in the master playlist");
++                free(data);
++                data = NULL;
++            }
+             *response_data = data;
+             *response_datalen = (int ) len;
+         } else {
+diff --git a/renderers/video_renderer.c b/renderers/video_renderer.c
+index 708f368..fa19ab4 100644
+--- a/renderers/video_renderer.c
++++ b/renderers/video_renderer.c
+@@ -1216,6 +1216,39 @@ unsigned int video_renderer_listen(void *loop, int id) {
+                                             gstreamer_video_pipeline_bus_callback, (gpointer) loop);    
+ }
+ 
++/* true if the server answers a request for this uri with data (tested with the same
++ * HTTP source element that the HLS player uses) */
++bool video_renderer_probe_uri(const char *uri) {
++    bool ok = false;
++    GstElement *pipeline = gst_pipeline_new("uri-probe");
++    GstElement *src = gst_element_factory_make("souphttpsrc", NULL);
++    GstElement *sink = gst_element_factory_make("fakesink", NULL);
++    if (!pipeline || !src || !sink) {
++        /* the test cannot be made: assume that the uri can be used */
++        if (pipeline) gst_object_unref(pipeline);
++        if (src) gst_object_unref(src);
++        if (sink) gst_object_unref(sink);
++        return true;
++    }
++    g_object_set(G_OBJECT(src), "location", uri, "timeout", (guint) 5, "retries", (gint) 0, NULL);
++    gst_bin_add_many(GST_BIN(pipeline), src, sink, NULL);
++    if (gst_element_link(src, sink)) {
++        GstBus *bus = gst_element_get_bus(pipeline);
++        gst_element_set_state(pipeline, GST_STATE_PAUSED);
++        GstMessage *msg = gst_bus_timed_pop_filtered(bus, 6 * GST_SECOND,
++                                                     (GstMessageType) (GST_MESSAGE_ERROR | GST_MESSAGE_ASYNC_DONE));
++        ok = (msg && GST_MESSAGE_TYPE(msg) == GST_MESSAGE_ASYNC_DONE);
++        if (msg) {
++            gst_message_unref(msg);
++        }
++        gst_object_unref(bus);
++    }
++    gst_element_set_state(pipeline, GST_STATE_NULL);
++    gst_object_unref(pipeline);
++    logger_log(logger, LOGGER_INFO, "HLS source test: %s %s", ok ? "ok    " : "FAILED", uri);
++    return ok;
++}
++
+ /* true (once) if the HLS player reported an error since the last call */
+ bool video_renderer_hls_error() {
+     if (hls_error_seen) {
+diff --git a/renderers/video_renderer.h b/renderers/video_renderer.h
+index 2325649..9469ea9 100644
+--- a/renderers/video_renderer.h
++++ b/renderers/video_renderer.h
+@@ -58,6 +58,7 @@ void video_renderer_set_track_metadata(const char *title, const char *artist, co
+ void video_renderer_pause ();
+ void video_renderer_hls_ready ();
+ bool video_renderer_hls_error();
++bool video_renderer_probe_uri(const char *uri);
+ void video_renderer_seek(float position);
+ void video_renderer_set_start(float position);
+ void video_renderer_resume ();
+diff --git a/uxplay.cpp b/uxplay.cpp
+index 4f36afa..7f166e0 100644
+--- a/uxplay.cpp
++++ b/uxplay.cpp
+@@ -820,7 +820,9 @@ static gboolean progress_callback (gpointer loop) {
+ static bool hls_stop_pending = false;
+ static bool hls_error_handled = false;
+ static float hls_start_position = 0.0f;
++static std::string hls_url = "";
+ extern "C" bool airplay_video_source_failed(void);
++extern "C" void airplay_video_set_uri_probe(bool (*probe)(const char *uri));
+ extern "C" void video_reset(void *cls, reset_type_t type);
+ 
+ static gboolean video_eos_watch_callback (gpointer loop) {
+@@ -834,10 +836,12 @@ static gboolean video_eos_watch_callback (gpointer loop) {
+         /* (only the first error of a playback is handled: errors come in bursts) */
+         hls_error_handled = true;
+         bool another_source = airplay_video_source_failed();
+-        if (another_source && !url.empty()) {
++        if (another_source && !hls_url.empty()) {
+             /* the playlist offers the same video on another host: play it from there */
+             LOGI("hls video error: starting playback again from another source");
+             hls_error_handled = false;
++            url.erase();
++            url.append(hls_url);
+             video_renderer_set_start(hls_start_position);
+             relaunch_video = true;
+             preserve_connections = true;
+@@ -2809,6 +2813,8 @@ extern "C" void on_video_play(void *cls, const char* location, const float start
+     hls_stop_pending = false;
+     url.erase();
+     url.append(location);
++    hls_url = url;
++    airplay_video_set_uri_probe(video_renderer_probe_uri);
+     relaunch_video = true;
+     preserve_connections = true;
+     LOGI("********************on_video_play: location = %s*** start position %f ********************", url.c_str(), start_position);

@@ -230,6 +230,14 @@ int main(int argc, char *argv[]) {
         qputenv("GIO_USE_PROXY_RESOLVER", "dummy");
     }
 
+    // HLS video: after a seek or a change of quality the player cancels its
+    // downloads, and the next request on the same HTTP/2 connection can stay
+    // without an answer until it times out (10 seconds). With HTTP/1.1 a
+    // cancelled download closes its connection instead.
+    if (!qEnvironmentVariableIsSet("SOUP_FORCE_HTTP1")) {
+        qputenv("SOUP_FORCE_HTTP1", "1");
+    }
+
     QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
     QString path = QDir::toNativeSeparators(appPath) + ";" + env.value("PATH");
     qputenv("PATH", path.toUtf8());
