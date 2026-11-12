@@ -1,0 +1,47 @@
+diff --git a/renderers/video_renderer.c b/renderers/video_renderer.c
+index fa19ab4..dc2809b 100644
+--- a/renderers/video_renderer.c
++++ b/renderers/video_renderer.c
+@@ -257,6 +257,30 @@ g_string_replace (GString     *string,
+  * bitrate stops that drift while still letting hlsdemux adapt above it.
+  *   UXPLAY_HLS_MIN_BITRATE=<bit/s>        lower bound (default 1200000; 0 = none)
+  *   UXPLAY_HLS_CONNECTION_SPEED=<kbit/s>  use a fixed rate instead of measuring (default: measure) */
++/* sets a numeric property of the HLS demuxer, if this version of it has the property.
++ * The value can be replaced with an environment variable (0 leaves the default). */
++static void hls_set_property(GstElement *element, const char *property, const char *env_name, guint64 value) {
++    GParamSpec *pspec = g_object_class_find_property(G_OBJECT_GET_CLASS(element), property);
++    const gchar *env = g_getenv(env_name);
++    GValue in = G_VALUE_INIT;
++    GValue out = G_VALUE_INIT;
++    if (env) {
++        value = g_ascii_strtoull(env, NULL, 10);
++    }
++    if (!pspec || value == 0) {
++        return;
++    }
++    g_value_init(&in, G_TYPE_UINT64);
++    g_value_set_uint64(&in, value);
++    g_value_init(&out, G_PARAM_SPEC_VALUE_TYPE(pspec));
++    if (g_value_transform(&in, &out)) {
++        g_object_set_property(G_OBJECT(element), property, &out);
++        logger_log(logger, LOGGER_INFO, "HLS %s set to %" G_GUINT64_FORMAT, property, value);
++    }
++    g_value_unset(&in);
++    g_value_unset(&out);
++}
++
+ static void hls_element_setup(GstElement *playbin, GstElement *element, gpointer user_data) {
+     GstElementFactory *factory = gst_element_get_factory(element);
+     const gchar *name = factory ? GST_OBJECT_NAME(factory) : NULL;
+@@ -273,6 +297,11 @@ static void hls_element_setup(GstElement *playbin, GstElement *element, gpointer
+         g_object_set(element, "min-bitrate", (guint) min_bitrate, NULL);
+         logger_log(logger, LOGGER_INFO, "HLS minimum variant bitrate set to %u bit/s", (guint) min_bitrate);
+     }
++    /* start with a good variant at once, instead of the lowest one followed by several
++     * changes of quality (each change is visible as a jump in the picture) */
++    hls_set_property(element, "start-bitrate", "UXPLAY_HLS_START_BITRATE", 10000000);
++    /* start playing when 3 seconds are buffered (the default is close to 9 seconds) */
++    hls_set_property(element, "low-watermark-time", "UXPLAY_HLS_LOW_WATERMARK_NS", 3 * GST_SECOND);
+ }
+ 
+ void video_renderer_init(logger_t *render_logger, const char *server_name, videoflip_t videoflip[2], const char *parser, const char * rtp_pipeline,
