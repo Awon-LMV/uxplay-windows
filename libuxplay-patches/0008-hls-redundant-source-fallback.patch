@@ -1,0 +1,252 @@
+diff --git a/lib/airplay_video.c b/lib/airplay_video.c
+index 1471f67..e9db34e 100644
+--- a/lib/airplay_video.c
++++ b/lib/airplay_video.c
+@@ -829,6 +829,136 @@ int create_media_uri_table(const char *url_prefix, const char *master_playlist_d
+ }
+ 
+ /* Adjust uri prefixes in the Master Playlist, for sending to the Media Player */
++/* Redundant sources.  A master playlist may list the same variants on several hosts
++ * (HLS "redundant streams").  The media player does not fall back to another host when
++ * one refuses the request (for example HTTP 403 from a geo-restricted CDN), so only the
++ * variants and renditions of one host are kept; airplay_video_skip_source() moves on to
++ * the next host after a playback error. */
++static int hls_source_skip = 0;
++
++void airplay_video_skip_source(void) {
++    hls_source_skip++;
++}
++
++#define MAX_SOURCE_HOSTS 8
++static bool uri_host(const char *uri, size_t len, const char **host, size_t *host_len) {
++    for (size_t i = 0; i + 3 <= len; i++) {
++        if (!memcmp(uri + i, "://", 3)) {
++            size_t start = i + 3;
++            size_t end = start;
++            while (end < len && uri[end] != '/' && uri[end] != '"' && uri[end] != '\r') {
++                end++;
++            }
++            if (end > start) {
++                *host = uri + start;
++                *host_len = end - start;
++                return true;
++            }
++            return false;
++        }
++    }
++    return false;
++}
++
++/* host of the URI="..." attribute of a tag line, if it has one */
++static bool tag_uri_host(const char *line, size_t len, const char **host, size_t *host_len) {
++    const char *attr = "URI=\"";
++    size_t attr_len = strlen(attr);
++    for (size_t i = 0; i + attr_len <= len; i++) {
++        if (!memcmp(line + i, attr, attr_len)) {
++            return uri_host(line + i + attr_len, len - i - attr_len, host, host_len);
++        }
++    }
++    return false;
++}
++
++static char *select_master_playlist_source(char *master_playlist) {
++    const char *stream_inf = "#EXT-X-STREAM-INF:";
++    size_t stream_inf_len = strlen(stream_inf);
++    const char *hosts[MAX_SOURCE_HOSTS];
++    size_t host_lens[MAX_SOURCE_HOSTS];
++    int nhosts = 0;
++    bool after_stream_inf = false;
++
++    /* collect the hosts of the variant URIs, in order of first appearance */
++    for (char *line = master_playlist; line && *line; ) {
++        char *eol = strchr(line, '\n');
++        size_t len = eol ? (size_t) (eol - line) : strlen(line);
++        if (!strncmp(line, stream_inf, stream_inf_len)) {
++            after_stream_inf = true;
++        } else if (after_stream_inf && len > 0 && line[0] != '#' && line[0] != '\r') {
++            const char *host = NULL;
++            size_t host_len = 0;
++            after_stream_inf = false;
++            if (uri_host(line, len, &host, &host_len)) {
++                bool known = false;
++                for (int i = 0; i < nhosts; i++) {
++                    if (host_lens[i] == host_len && !memcmp(hosts[i], host, host_len)) {
++                        known = true;
++                        break;
++                    }
++                }
++                if (!known && nhosts < MAX_SOURCE_HOSTS) {
++                    hosts[nhosts] = host;
++                    host_lens[nhosts] = host_len;
++                    nhosts++;
++                }
++            }
++        }
++        line = eol ? eol + 1 : NULL;
++    }
++    if (nhosts < 2) {
++        return master_playlist;
++    }
++
++    /* copy of the chosen host: the playlist is edited in place below */
++    int chosen = hls_source_skip % nhosts;
++    char chosen_host[256];
++    size_t chosen_len = host_lens[chosen];
++    if (chosen_len >= sizeof(chosen_host)) {
++        return master_playlist;
++    }
++    memcpy(chosen_host, hosts[chosen], chosen_len);
++    chosen_host[chosen_len] = '\0';
++
++    char *out = master_playlist;
++    char *pending = NULL;        /* a #EXT-X-STREAM-INF line waiting for its URI line */
++    size_t pending_len = 0;
++    for (char *line = master_playlist; line && *line; ) {
++        char *eol = strchr(line, '\n');
++        size_t len = eol ? (size_t) (eol - line) : strlen(line);
++        size_t full_len = eol ? len + 1 : len;
++        char *next = eol ? eol + 1 : NULL;
++        const char *host = NULL;
++        size_t host_len = 0;
++        bool keep = true;
++        if (!strncmp(line, stream_inf, stream_inf_len)) {
++            /* decided when its URI line is seen */
++            pending = line;
++            pending_len = full_len;
++            line = next;
++            continue;
++        } else if (pending && len > 0 && line[0] != '#' && line[0] != '\r') {
++            keep = !uri_host(line, len, &host, &host_len) ||
++                   (host_len == chosen_len && !memcmp(host, chosen_host, chosen_len));
++            if (keep) {
++                memmove(out, pending, pending_len);
++                out += pending_len;
++            }
++            pending = NULL;
++        } else if (line[0] == '#' && tag_uri_host(line, len, &host, &host_len)) {
++            keep = (host_len == chosen_len && !memcmp(host, chosen_host, chosen_len));
++        }
++        if (keep) {
++            memmove(out, line, full_len);
++            out += full_len;
++        }
++        line = next;
++    }
++    *out = '\0';
++    return master_playlist;
++}
++
+ /* Helpers for master playlists of sources other than YouTube: make relative URIs
+  * absolute, using the location the playlist was fetched from, so that the media
+  * player can fetch the media playlists and segments directly from the source. */
+@@ -952,7 +1082,8 @@ char *adjust_master_playlist (char *fcup_response_data, int fcup_response_datale
+         /* no media URI starts with uri_prefix: this is not a YouTube-style playlist.
+          * Keep it as it is, except that relative URIs are made absolute. */
+         free(new_master);
+-        return absolutize_master_playlist(fcup_response_data, (size_t) fcup_response_datalen, uri_prefix);
++        return select_master_playlist_source(
++            absolutize_master_playlist(fcup_response_data, (size_t) fcup_response_datalen, uri_prefix));
+     }
+     counter  = 0;
+     while (last != NULL) {
+diff --git a/lib/airplay_video.h b/lib/airplay_video.h
+index 04c37a2..ea5d2a1 100644
+--- a/lib/airplay_video.h
++++ b/lib/airplay_video.h
+@@ -58,6 +58,7 @@ int create_media_uri_table(const char *url_prefix, const char *master_playlist_d
+ void store_master_playlist(airplay_video_t *airplay_video, char *master_playlist);
+ char *select_master_playlist_language(airplay_video_t *airplay_video, char *master_playlist);
+ char *select_master_playlist_codec(char *master_playlist);
++void airplay_video_skip_source(void);
+ int store_media_playlist(airplay_video_t *airplay_video, char *media_playlist, int *count, float *duration, bool*endlist, int num);
+ char *get_master_playlist(airplay_video_t *airplay_video);
+ char *get_media_playlist(airplay_video_t *airplay_video, int *count, float *duration, const char *uri);
+diff --git a/lib/http_handlers.h b/lib/http_handlers.h
+index a8991aa..3d11a7b 100644
+--- a/lib/http_handlers.h
++++ b/lib/http_handlers.h
+@@ -790,7 +790,9 @@ http_handler_play(raop_conn_t *conn, http_request_t *request, http_response_t *r
+     id = get_playlist_by_uuid(raop, playback_uuid);
+ 
+     /* check if playlist is already downloaded and stored (may have been interrupted by advertisements ) */
+-    if (id >= 0) {
++    /* (a stored playlist without media playlists comes from a source other than YouTube:
++     * it is fetched again, so that a different redundant source can be chosen) */
++    if (id >= 0 && get_duration(raop->airplay_video[id]) > 0.0f) {
+       //printf("====use EXISTING  airplay_video[%d] %p %s %s\n", id, raop->airplay_video[id], playback_uuid, get_playback_uuid(raop->airplay_video[id]));
+         plist_mem_free(playback_uuid);
+         plist_free(req_root_node);
+diff --git a/renderers/video_renderer.c b/renderers/video_renderer.c
+index e2a011d..0ed3cca 100644
+--- a/renderers/video_renderer.c
++++ b/renderers/video_renderer.c
+@@ -41,6 +41,7 @@ static bool first_packet = false;
+ static bool sync = false;
+ static bool auto_videosink = true;
+ static bool hls_video = false;
++static gboolean hls_error_seen = FALSE;
+ #ifdef X_DISPLAY_FIX
+ static bool use_x11 = false;
+ #endif
+@@ -945,6 +946,9 @@ static gboolean gstreamer_video_pipeline_bus_callback(GstBus *bus, GstMessage *m
+         gboolean closed_window = FALSE;
+         gst_message_parse_error (message, &err, &debug);
+         logger_log(logger, LOGGER_INFO, "GStreamer error (video): %s %s", GST_MESSAGE_SRC_NAME(message),err->message);
++        if (hls_video) {
++            hls_error_seen = TRUE;
++        }
+         if (strstr(err->message, "Output window was closed")) {
+             closed_window = TRUE;
+         }
+@@ -1211,6 +1215,15 @@ unsigned int video_renderer_listen(void *loop, int id) {
+                                             gstreamer_video_pipeline_bus_callback, (gpointer) loop);    
+ }
+ 
++/* true (once) if the HLS player reported an error since the last call */
++bool video_renderer_hls_error() {
++    if (hls_error_seen) {
++        hls_error_seen = FALSE;
++        return true;
++    }
++    return false;
++}
++
+ bool video_renderer_eos_watch() {
+     if (hls_video && renderer->eos) {
+         renderer->eos = FALSE;
+diff --git a/renderers/video_renderer.h b/renderers/video_renderer.h
+index 4277277..2325649 100644
+--- a/renderers/video_renderer.h
++++ b/renderers/video_renderer.h
+@@ -57,6 +57,7 @@ void video_renderer_set_device_model(const char *model, const char *name);
+ void video_renderer_set_track_metadata(const char *title, const char *artist, const char *album);
+ void video_renderer_pause ();
+ void video_renderer_hls_ready ();
++bool video_renderer_hls_error();
+ void video_renderer_seek(float position);
+ void video_renderer_set_start(float position);
+ void video_renderer_resume ();
+diff --git a/uxplay.cpp b/uxplay.cpp
+index 3cb4f6b..0b61aa8 100644
+--- a/uxplay.cpp
++++ b/uxplay.cpp
+@@ -818,6 +818,7 @@ static gboolean progress_callback (gpointer loop) {
+ }
+ 
+ static bool hls_stop_pending = false;
++extern "C" void airplay_video_skip_source(void);
+ extern "C" void video_reset(void *cls, reset_type_t type);
+ 
+ static gboolean video_eos_watch_callback (gpointer loop) {
+@@ -827,6 +828,11 @@ static gboolean video_eos_watch_callback (gpointer loop) {
+         video_renderer_hls_ready();
+         raop_handle_eos(raop);
+     }
++    if (video_renderer_hls_error()) {
++        /* the next HLS play request will use the next redundant source, if there is one */
++        LOGI("hls video error: the next play request will try another source, if one is offered");
++        airplay_video_skip_source();
++    }
+     if (hls_stop_pending) {
+         /* the client stopped HLS playback (POST /stop): rebuild the mirror-mode renderers
+          * here, on the main-loop thread, so that screen mirroring can resume at once */
