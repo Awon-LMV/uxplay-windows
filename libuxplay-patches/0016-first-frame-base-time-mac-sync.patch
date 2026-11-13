@@ -1,0 +1,45 @@
+diff --git a/renderers/video_renderer.c b/renderers/video_renderer.c
+index 7575ea3..1fe6ac2 100644
+--- a/renderers/video_renderer.c
++++ b/renderers/video_renderer.c
+@@ -684,7 +684,20 @@ uint64_t video_renderer_render_buffer(unsigned char* data, int *data_len, int *n
+     //GstClockTimeDiff latency = GST_CLOCK_DIFF(gst_element_get_current_clock_time (renderer->appsrc), pts);
+     /* a client with timestamp sync switched off (Mac) gets no buffer timestamps at all:
+      * its first frame carries an absolute time, and every later frame is then dropped as late */
+-    if (sync && client_video_sync) {
++    gboolean use_pts = (sync && client_video_sync);
++    if (use_pts && renderer && renderer->appsrc &&
++        (gst_video_pipeline_base_time == 0 || gst_video_pipeline_base_time == GST_CLOCK_TIME_NONE ||
++         (pts > gst_video_pipeline_base_time && pts - gst_video_pipeline_base_time > 3600 * GST_SECOND))) {
++        /* base time was read before the pipeline was running: read it again */
++        gst_video_pipeline_base_time = gst_element_get_base_time(renderer->appsrc);
++        if (gst_video_pipeline_base_time == 0 || gst_video_pipeline_base_time == GST_CLOCK_TIME_NONE ||
++            (pts > gst_video_pipeline_base_time && pts - gst_video_pipeline_base_time > 3600 * GST_SECOND)) {
++            /* still not usable: show this frame without a timestamp */
++            logger_log(logger, LOGGER_DEBUG, "video frame rendered without timestamp (pipeline base time not set yet)");
++            use_pts = FALSE;
++        }
++    }
++    if (use_pts) {
+         if (pts >= gst_video_pipeline_base_time) {
+             pts -= gst_video_pipeline_base_time;
+         } else {
+@@ -713,7 +726,7 @@ uint64_t video_renderer_render_buffer(unsigned char* data, int *data_len, int *n
+         buffer = gst_buffer_new_allocate(NULL, *data_len, NULL);
+         g_assert(buffer != NULL);
+         //g_print("video latency %8.6f\n", (double) latency / SECOND_IN_NSECS);
+-        if (sync && client_video_sync) {
++        if (use_pts) {
+             GST_BUFFER_PTS(buffer) = pts;
+         }
+         gst_buffer_fill(buffer, 0, data, *data_len);
+@@ -787,6 +800,9 @@ void video_renderer_set_device_model(const char *model, const char *name) {
+      * applied when the video stream starts (video_renderer_choose_codec). */
+     (void)name;
+     client_video_sync = mirror_video_sync;
++    if (!g_getenv("UXPLAY_MAC_NOSYNC")) {
++        return;
++    }
+     if (model && !strncmp(model, "Mac", 3)) {
+         client_video_sync = FALSE;
+     }
