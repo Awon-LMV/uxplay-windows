@@ -1,0 +1,24 @@
+diff --git a/renderers/video_renderer.c b/renderers/video_renderer.c
+index 14db7a2..7575ea3 100644
+--- a/renderers/video_renderer.c
++++ b/renderers/video_renderer.c
+@@ -682,7 +682,9 @@ uint64_t video_renderer_render_buffer(unsigned char* data, int *data_len, int *n
+     GstBuffer *buffer = NULL;
+     GstClockTime pts = (GstClockTime) *ntp_time; /*now in nsecs */
+     //GstClockTimeDiff latency = GST_CLOCK_DIFF(gst_element_get_current_clock_time (renderer->appsrc), pts);
+-    if (sync) {
++    /* a client with timestamp sync switched off (Mac) gets no buffer timestamps at all:
++     * its first frame carries an absolute time, and every later frame is then dropped as late */
++    if (sync && client_video_sync) {
+         if (pts >= gst_video_pipeline_base_time) {
+             pts -= gst_video_pipeline_base_time;
+         } else {
+@@ -711,7 +713,7 @@ uint64_t video_renderer_render_buffer(unsigned char* data, int *data_len, int *n
+         buffer = gst_buffer_new_allocate(NULL, *data_len, NULL);
+         g_assert(buffer != NULL);
+         //g_print("video latency %8.6f\n", (double) latency / SECOND_IN_NSECS);
+-        if (sync) {
++        if (sync && client_video_sync) {
+             GST_BUFFER_PTS(buffer) = pts;
+         }
+         gst_buffer_fill(buffer, 0, data, *data_len);
