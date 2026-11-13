@@ -1,0 +1,21 @@
+diff --git a/renderers/video_renderer.c b/renderers/video_renderer.c
+index 1fe6ac2..35bfe25 100644
+--- a/renderers/video_renderer.c
++++ b/renderers/video_renderer.c
+@@ -701,10 +701,12 @@ uint64_t video_renderer_render_buffer(unsigned char* data, int *data_len, int *n
+         if (pts >= gst_video_pipeline_base_time) {
+             pts -= gst_video_pipeline_base_time;
+         } else {
+-            // adjust timestamps to be >= gst_video_pipeline_base time
+-            logger_log(logger, LOGGER_DEBUG, "*** invalid ntp_time < gst_video_pipeline_base_time\n%8.6f ntp_time\n%8.6f base_time",
+-                       ((double) *ntp_time) / SECOND_IN_NSECS, ((double) gst_video_pipeline_base_time) / SECOND_IN_NSECS);
+-            return  (uint64_t)  gst_video_pipeline_base_time - pts;
++            /* the frame was captured before the pipeline started (the first frames of a
++             * stream): show it at once.  Shifting all timestamps forward instead would
++             * delay the whole stream by that amount for as long as it runs. */
++            logger_log(logger, LOGGER_DEBUG, "video frame from before the pipeline start rendered without timestamp (%8.6f secs early)",
++                       ((double) (gst_video_pipeline_base_time - pts)) / SECOND_IN_NSECS);
++            use_pts = FALSE;
+         }
+     }
+     g_assert(data_len != 0);
