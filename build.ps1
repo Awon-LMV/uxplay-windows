@@ -67,7 +67,37 @@ function Invoke-Native {
 
     Push-Location $WorkingDirectory
     try {
-        & $FilePath @Arguments
+        if ($env:GITHUB_ACTIONS) {
+            # On GitHub Actions the output is also kept, so that the lines that explain a
+            # failure can be reported as annotations of the run (they can be read without
+            # opening the job log).
+            $captured = New-Object System.Collections.Generic.List[string]
+            $previousPreference = $ErrorActionPreference
+            $ErrorActionPreference = 'Continue'
+            try {
+                & $FilePath @Arguments 2>&1 | ForEach-Object {
+                    $text = "$_"
+                    $captured.Add($text)
+                    Write-Host $text
+                }
+            }
+            finally {
+                $ErrorActionPreference = $previousPreference
+            }
+            if ($LASTEXITCODE -ne 0) {
+                $captured |
+                    Where-Object { $_ -match '(?i)\berror\b|undefined reference|FAILED:|cannot find' } |
+                    Select-Object -First 8 |
+                    ForEach-Object {
+                        $message = ($_ -replace '%', '%25').Trim()
+                        if ($message.Length -gt 900) { $message = $message.Substring(0, 900) }
+                        Write-Host "::error::$message"
+                    }
+            }
+        }
+        else {
+            & $FilePath @Arguments
+        }
         if ($LASTEXITCODE -ne 0) {
             throw (
                 "Command failed with exit code ${LASTEXITCODE}: " +
